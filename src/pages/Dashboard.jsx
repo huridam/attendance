@@ -602,14 +602,6 @@ function Dashboard() {
     }
   }, [user, selectedDateForDetail, selectedClass, schoolId, activeMonth, loadAttendanceDates]);
 
-  // 수정 버튼 클릭
-  const handleEditAttendance = useCallback(() => {
-    if (selectedDateForDetail) {
-      setShowAttendanceDetail(false);
-      navigate(`/attendance/${selectedDateForDetail}`);
-    }
-  }, [selectedDateForDetail, navigate]);
-
   // 개별 학생 수정 모달 열기
   const handleEditStudent = useCallback((studentRecord) => {
     setEditingStudent(studentRecord);
@@ -1134,8 +1126,14 @@ function Dashboard() {
 
       {/* 개별 학생 수정 모달 */}
       {showEditStudentModal && editingStudent && editingStudentData && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center p-4" onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setShowEditStudentModal(false);
+            setEditingStudent(null);
+            setEditingStudentData(null);
+          }
+        }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
             {/* 모달 헤더 */}
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <h3 className="text-lg font-bold text-gray-900">
