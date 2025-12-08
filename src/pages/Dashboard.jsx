@@ -1088,7 +1088,12 @@ function Dashboard() {
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
                                 <button
-                                  onClick={() => handleEditStudent(record)}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleEditStudent(record);
+                                  }}
                                   className="p-1.5 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded transition-colors"
                                   aria-label="수정"
                                   title="수정"
@@ -1097,7 +1102,12 @@ function Dashboard() {
                                 </button>
                                 {record.status !== '출석' && (
                                   <button
-                                    onClick={() => handleDeleteStudentRecord(record)}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handleDeleteStudentRecord(record);
+                                    }}
                                     disabled={deletingStudentRecord === record.studentId}
                                     className="p-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                     aria-label="삭제"
@@ -1140,7 +1150,10 @@ function Dashboard() {
                 {editingStudent.studentName} 학생 수정
               </h3>
               <button
-                onClick={() => {
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
                   setShowEditStudentModal(false);
                   setEditingStudent(null);
                   setEditingStudentData(null);
@@ -1148,7 +1161,7 @@ function Dashboard() {
                 className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
                 aria-label="닫기"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-4" />
               </button>
             </div>
 
@@ -1260,7 +1273,10 @@ function Dashboard() {
               {/* 저장 버튼 */}
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
                 <button
-                  onClick={() => {
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     setShowEditStudentModal(false);
                     setEditingStudent(null);
                     setEditingStudentData(null);
@@ -1270,7 +1286,12 @@ function Dashboard() {
                   취소
                 </button>
                 <button
-                  onClick={handleSaveStudentEdit}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleSaveStudentEdit();
+                  }}
                   disabled={savingStudentEdit}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
