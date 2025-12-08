@@ -37,6 +37,12 @@ function Dashboard() {
   const [editingStudentData, setEditingStudentData] = useState(null);
   const [savingStudentEdit, setSavingStudentEdit] = useState(false);
   const [deletingStudentRecord, setDeletingStudentRecord] = useState(null);
+  const [showBulkAttendanceModal, setShowBulkAttendanceModal] = useState(false);
+  const [selectedDateForBulk, setSelectedDateForBulk] = useState(null);
+  const [bulkAttendanceRecords, setBulkAttendanceRecords] = useState({});
+  const [bulkStudents, setBulkStudents] = useState([]);
+  const [loadingBulkStudents, setLoadingBulkStudents] = useState(false);
+  const [savingBulkAttendance, setSavingBulkAttendance] = useState(false);
   const navigate = useNavigate();
   const monthKey = format(activeMonth, 'yyyy-MM');
   const attendanceDateSet = useMemo(() => new Set(attendanceDates), [attendanceDates]);
@@ -141,8 +147,10 @@ function Dashboard() {
       setSelectedDateForDetail(dateStr);
       setShowAttendanceDetail(true);
     } else {
-      // 기록이 없으면 기존처럼 입력 페이지로 이동
-      navigate(`/attendance/${dateStr}`);
+      // 기록이 없으면 일괄 입력 모달 열기
+      await loadBulkStudents(dateStr);
+      setSelectedDateForBulk(dateStr);
+      setShowBulkAttendanceModal(true);
     }
   };
 
@@ -712,6 +720,161 @@ function Dashboard() {
       setSavingStudentEdit(false);
     }
   }, [user, selectedDateForDetail, selectedClass, schoolId, editingStudent, editingStudentData, loadAttendanceDetail]);
+
+  // 일괄 입력을 위한 학생 목록 로드
+  const loadBulkStudents = useCallback(async (dateStr) => {
+    if (!user || !dateStr || !selectedClass || !schoolId) {
+      setBulkStudents([]);
+      setBulkAttendanceRecords({});
+      return;
+    }
+    setLoadingBulkStudents(true);
+    try {
+      // 학생 목록 로드
+      const studentsQuery = query(
+        collection(db, 'students'),
+        where('schoolId', '==', schoolId),
+        where('className', '==', selectedClass)
+      );
+      const studentsSnapshot = await getDocs(studentsQuery);
+      const studentsList = [];
+      studentsSnapshot.forEach((doc) => {
+        studentsList.push({ id: doc.id, ...doc.data() });
+      });
+      studentsList.sort((a, b) => (a.number || 0) - (b.number || 0));
+      setBulkStudents(studentsList);
+
+      // 초기 기록 설정 (모두 출석으로)
+      const initialRecords = {};
+      studentsList.forEach((student) => {
+        initialRecords[student.id] = {
+          studentId: student.id,
+          studentNumber: student.number,
+          studentName: student.name,
+          status: '출석',
+          reason: '',
+          periods: [],
+          memo: '',
+        };
+      });
+      setBulkAttendanceRecords(initialRecords);
+    } catch (err) {
+      console.error('학생 목록 로드 오류:', err);
+      setBulkStudents([]);
+      setBulkAttendanceRecords({});
+    } finally {
+      setLoadingBulkStudents(false);
+    }
+  }, [user, selectedClass, schoolId]);
+
+  // 일괄 입력 기록 업데이트
+  const updateBulkRecord = useCallback((studentId, field, value) => {
+    setBulkAttendanceRecords((prev) => ({
+      ...prev,
+      [studentId]: {
+        ...prev[studentId],
+        [field]: value,
+        // 상태가 변경되면 관련 필드 초기화
+        ...(field === 'status' && {
+          reason: value === '출석' ? '' : prev[studentId]?.reason || '',
+          periods: ['지각', '조퇴', '결과'].includes(value) ? prev[studentId]?.periods || [] : [],
+        }),
+      },
+    }));
+  }, []);
+
+  // 교시 토글
+  const toggleBulkPeriod = useCallback((studentId, period) => {
+    const currentPeriods = bulkAttendanceRecords[studentId]?.periods || [];
+    const newPeriods = currentPeriods.includes(period)
+      ? currentPeriods.filter((p) => p !== period)
+      : [...currentPeriods, period].sort((a, b) => a - b);
+    updateBulkRecord(studentId, 'periods', newPeriods);
+  }, [bulkAttendanceRecords, updateBulkRecord]);
+
+  // 일괄 출석 기록 저장
+  const handleSaveBulkAttendance = useCallback(async () => {
+    if (!user || !selectedDateForBulk || !selectedClass || !schoolId) return;
+
+    // 유효성 검사
+    const records = Object.values(bulkAttendanceRecords);
+    for (const record of records) {
+      if (record.status !== '출석') {
+        if (!record.reason) {
+          alert(`${record.studentName} 학생의 사유를 선택해주세요.`);
+          return;
+        }
+        if (['지각', '조퇴', '결과'].includes(record.status) && record.periods.length === 0) {
+          alert(`${record.studentName} 학생의 교시를 선택해주세요.`);
+          return;
+        }
+      }
+    }
+
+    setSavingBulkAttendance(true);
+    try {
+      const docId = `${schoolId}-${selectedClass}-${selectedDateForBulk}`;
+      const attendanceDocRef = doc(db, 'attendance', docId);
+
+      const recordsWithMemo = records.map((record) => ({
+        ...record,
+        memo: record.memo || '',
+      }));
+
+      await setDoc(
+        attendanceDocRef,
+        {
+          schoolId: schoolId,
+          teacherId: user.uid,
+          className: selectedClass,
+          date: selectedDateForBulk,
+          records: recordsWithMemo,
+        },
+        { merge: false }
+      );
+
+      // 감사 로그 생성
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userDocRef);
+        const userData = userDoc.exists() ? userDoc.data() : {};
+        const editorName = userData.displayName || user.email || user.uid;
+
+        const abnormalRecords = recordsWithMemo.filter(r => r.status !== '출석');
+        const details = abnormalRecords.length > 0
+          ? `${abnormalRecords.length}명의 학생 이상 기록 생성: ${abnormalRecords.map(r => `${r.studentName}(${r.status})`).join(', ')}`
+          : '출석 기록 저장 (모든 학생 출석)';
+
+        await addDoc(collection(db, 'audit_logs'), {
+          timestamp: new Date(),
+          editorId: user.uid,
+          editorName: editorName,
+          action: 'ATTENDANCE_CREATE',
+          targetDocId: docId,
+          schoolId: schoolId,
+          className: selectedClass,
+          date: selectedDateForBulk,
+          details: details,
+        });
+      } catch (logError) {
+        console.error('감사 로그 생성 오류:', logError);
+      }
+
+      // 모달 닫기 및 목록 새로고침
+      setShowBulkAttendanceModal(false);
+      setSelectedDateForBulk(null);
+      setBulkAttendanceRecords({});
+      setBulkStudents([]);
+
+      // 출석 날짜 목록 새로고침
+      await loadAttendanceDates(activeMonth);
+    } catch (err) {
+      console.error('일괄 출석 기록 저장 오류:', err);
+      alert('출석 기록 저장 중 오류가 발생했습니다.');
+    } finally {
+      setSavingBulkAttendance(false);
+    }
+  }, [user, selectedDateForBulk, selectedClass, schoolId, bulkAttendanceRecords, activeMonth, loadAttendanceDates]);
 
   // 개별 학생 기록 삭제 (출석으로 변경)
   const handleDeleteStudentRecord = useCallback(async (studentRecord) => {
@@ -1313,6 +1476,216 @@ function Dashboard() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 일괄 출석 입력 모달 */}
+      {showBulkAttendanceModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center p-4" onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setShowBulkAttendanceModal(false);
+            setSelectedDateForBulk(null);
+            setBulkAttendanceRecords({});
+            setBulkStudents([]);
+          }
+        }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* 모달 헤더 */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h3 className="text-xl font-bold text-gray-900">
+                {selectedDateForBulk ? 
+                  (() => {
+                    try {
+                      return format(new Date(selectedDateForBulk.replace(/-/g, '/')), 'yyyy년 M월 d일') + ' 출석 입력';
+                    } catch (err) {
+                      return selectedDateForBulk + ' 출석 입력';
+                    }
+                  })() : 
+                  '출석 입력'}
+              </h3>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowBulkAttendanceModal(false);
+                  setSelectedDateForBulk(null);
+                  setBulkAttendanceRecords({});
+                  setBulkStudents([]);
+                }}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                aria-label="닫기"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* 모달 내용 */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingBulkStudents ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+                </div>
+              ) : bulkStudents.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  등록된 학생이 없습니다.
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {bulkStudents.map((student) => {
+                    const record = bulkAttendanceRecords[student.id] || {
+                      status: '출석',
+                      reason: '',
+                      periods: [],
+                      memo: '',
+                    };
+                    const showReason = record.status !== '출석';
+                    const showPeriods = ['지각', '조퇴', '결과'].includes(record.status);
+
+                    return (
+                      <div key={student.id} className="bg-gray-50 rounded-lg p-4 space-y-4 border border-gray-200">
+                        {/* 학생 정보 */}
+                        <div className="flex items-center justify-between pb-3 border-b border-gray-200">
+                          <div>
+                            <span className="text-sm text-gray-600">{student.number}번</span>
+                            <span className="ml-2 text-lg font-semibold text-gray-900">{student.name}</span>
+                          </div>
+                        </div>
+
+                        {/* 상태 선택 */}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">상태</label>
+                          <div className="flex flex-wrap gap-2">
+                            {STATUS_OPTIONS.map((status) => (
+                              <button
+                                key={status}
+                                type="button"
+                                onClick={() => updateBulkRecord(student.id, 'status', status)}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                  record.status === status
+                                    ? 'bg-gray-900 text-white'
+                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                }`}
+                              >
+                                {status}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* 사유 선택 */}
+                        {showReason && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              사유 <span className="text-red-500">*</span>
+                            </label>
+                            <div className="flex flex-wrap gap-2">
+                              {REASON_OPTIONS.map((reason) => (
+                                <button
+                                  key={reason}
+                                  type="button"
+                                  onClick={() => updateBulkRecord(student.id, 'reason', reason)}
+                                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                    record.reason === reason
+                                      ? 'bg-gray-900 text-white'
+                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  }`}
+                                >
+                                  {reason}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 교시 선택 */}
+                        {showPeriods && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              교시 <span className="text-red-500">*</span>
+                            </label>
+                            <div className="flex flex-wrap gap-2">
+                              {PERIODS.map((period) => (
+                                <button
+                                  key={period}
+                                  type="button"
+                                  onClick={() => toggleBulkPeriod(student.id, period)}
+                                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                    record.periods?.includes(period)
+                                      ? 'bg-gray-900 text-white'
+                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  }`}
+                                >
+                                  {period}교시
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 비고 입력 */}
+                        <div>
+                          <label htmlFor={`bulk-memo-${student.id}`} className="block text-sm font-medium text-gray-700 mb-2">
+                            비고 (선택사항)
+                          </label>
+                          <textarea
+                            id={`bulk-memo-${student.id}`}
+                            value={record.memo || ''}
+                            onChange={(e) => updateBulkRecord(student.id, 'memo', e.target.value)}
+                            placeholder="추가 메모를 입력하세요 (선택사항)"
+                            rows={2}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none resize-none"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 저장 버튼 */}
+            {bulkStudents.length > 0 && (
+              <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShowBulkAttendanceModal(false);
+                    setSelectedDateForBulk(null);
+                    setBulkAttendanceRecords({});
+                    setBulkStudents([]);
+                  }}
+                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleSaveBulkAttendance();
+                  }}
+                  disabled={savingBulkAttendance}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {savingBulkAttendance ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>저장 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>전체 저장</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
