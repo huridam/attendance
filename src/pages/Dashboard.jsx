@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, deleteDoc } from 'firebase/firestore';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css';
@@ -8,7 +8,7 @@ import { db, auth } from '../firebase';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useStudentContext } from '../context/StudentContext';
 import { format, startOfMonth, endOfMonth, getDaysInMonth, parse, getDay } from 'date-fns';
-import { Download, Loader2, Calendar as CalendarIcon, X, CalendarDays } from 'lucide-react';
+import { Download, Loader2, Calendar as CalendarIcon, X, CalendarDays, Edit, Trash2 } from 'lucide-react';
 
 function Dashboard() {
   const [user] = useAuthState(auth);
@@ -23,6 +23,11 @@ function Dashboard() {
   const [showStudentView, setShowStudentView] = useState(false);
   const [studentRecords, setStudentRecords] = useState([]);
   const [loadingStudent, setLoadingStudent] = useState(false);
+  const [showAttendanceDetail, setShowAttendanceDetail] = useState(false);
+  const [selectedDateForDetail, setSelectedDateForDetail] = useState(null);
+  const [attendanceDetailRecords, setAttendanceDetailRecords] = useState([]);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const navigate = useNavigate();
   const monthKey = format(activeMonth, 'yyyy-MM');
   const attendanceDateSet = useMemo(() => new Set(attendanceDates), [attendanceDates]);
@@ -116,10 +121,20 @@ function Dashboard() {
     }
   }, []);
 
-  const handleDateChange = (newDate) => {
+  const handleDateChange = async (newDate) => {
     setDate(newDate);
     const dateStr = formatDateValue(newDate);
-    navigate(`/attendance/${dateStr}`);
+    
+    // 출석 기록이 있는지 확인
+    if (hasAttendanceOnDate(newDate)) {
+      // 기록이 있으면 상세 모달 열기
+      await loadAttendanceDetail(dateStr);
+      setSelectedDateForDetail(dateStr);
+      setShowAttendanceDetail(true);
+    } else {
+      // 기록이 없으면 기존처럼 입력 페이지로 이동
+      navigate(`/attendance/${dateStr}`);
+    }
   };
 
   const handleActiveStartDateChange = useCallback(
@@ -506,6 +521,90 @@ function Dashboard() {
     loadAttendanceDates(today);
   }, [loadAttendanceDates]);
 
+  // 출석 기록 상세 로드
+  const loadAttendanceDetail = useCallback(async (dateStr) => {
+    if (!user || !dateStr || !selectedClass || !schoolId) {
+      setAttendanceDetailRecords([]);
+      return;
+    }
+    setLoadingDetail(true);
+    try {
+      const docId = `${schoolId}-${selectedClass}-${dateStr}`;
+      const attendanceDocRef = doc(db, 'attendance', docId);
+      const attendanceDoc = await getDoc(attendanceDocRef);
+      
+      if (attendanceDoc.exists()) {
+        const data = attendanceDoc.data();
+        if (data.records && Array.isArray(data.records)) {
+          // 학생 번호 순으로 정렬
+          const sortedRecords = [...data.records].sort((a, b) => {
+            const numA = a.studentNumber || 0;
+            const numB = b.studentNumber || 0;
+            return numA - numB;
+          });
+          setAttendanceDetailRecords(sortedRecords);
+        } else {
+          setAttendanceDetailRecords([]);
+        }
+      } else {
+        setAttendanceDetailRecords([]);
+      }
+    } catch (err) {
+      console.error('출석 기록 상세 로드 오류:', err);
+      setAttendanceDetailRecords([]);
+    } finally {
+      setLoadingDetail(false);
+    }
+  }, [user, selectedClass, schoolId]);
+
+  // 출석 기록 삭제
+  const handleDeleteAttendance = useCallback(async () => {
+    if (!user || !selectedDateForDetail || !selectedClass || !schoolId) return;
+    
+    // 날짜 포맷팅 (yyyy-MM-dd -> yyyy년 M월 d일)
+    let formattedDate = selectedDateForDetail;
+    try {
+      const dateObj = new Date(selectedDateForDetail.replace(/-/g, '/'));
+      formattedDate = format(dateObj, 'yyyy년 M월 d일');
+    } catch (err) {
+      console.error('날짜 포맷 오류:', err);
+    }
+    
+    if (!window.confirm(`정말로 ${formattedDate}의 출석 기록을 삭제하시겠습니까?`)) {
+      return;
+    }
+    
+    setDeleting(true);
+    try {
+      const docId = `${schoolId}-${selectedClass}-${selectedDateForDetail}`;
+      const attendanceDocRef = doc(db, 'attendance', docId);
+      await deleteDoc(attendanceDocRef);
+      
+      // 모달 닫기 및 목록 새로고침
+      setShowAttendanceDetail(false);
+      setSelectedDateForDetail(null);
+      setAttendanceDetailRecords([]);
+      
+      // 출석 날짜 목록 새로고침
+      await loadAttendanceDates(activeMonth);
+      
+      alert('출석 기록이 삭제되었습니다.');
+    } catch (err) {
+      console.error('출석 기록 삭제 오류:', err);
+      alert('출석 기록 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setDeleting(false);
+    }
+  }, [user, selectedDateForDetail, selectedClass, schoolId, activeMonth, loadAttendanceDates]);
+
+  // 수정 버튼 클릭
+  const handleEditAttendance = useCallback(() => {
+    if (selectedDateForDetail) {
+      setShowAttendanceDetail(false);
+      navigate(`/attendance/${selectedDateForDetail}`);
+    }
+  }, [selectedDateForDetail, navigate]);
+
   // 출석 기록이 있는 날짜인지 확인하는 함수 (강화된 검증)
   const hasAttendanceOnDate = useCallback(
     (dateObj) => {
@@ -708,6 +807,134 @@ function Dashboard() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 출석 기록 상세 모달 */}
+      {showAttendanceDetail && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
+            {/* 모달 헤더 */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h3 className="text-xl font-bold text-gray-900">
+                {selectedDateForDetail ? 
+                  (() => {
+                    try {
+                      return format(new Date(selectedDateForDetail.replace(/-/g, '/')), 'yyyy년 M월 d일');
+                    } catch (err) {
+                      return selectedDateForDetail;
+                    }
+                  })() : 
+                  '출석 기록'}
+              </h3>
+              <button
+                onClick={() => {
+                  setShowAttendanceDetail(false);
+                  setSelectedDateForDetail(null);
+                  setAttendanceDetailRecords([]);
+                }}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                aria-label="닫기"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* 모달 내용 */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {loadingDetail ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+                </div>
+              ) : attendanceDetailRecords.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  출석 기록이 없습니다.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-gray-700 font-semibold">번호</th>
+                          <th className="px-4 py-3 text-left text-gray-700 font-semibold">이름</th>
+                          <th className="px-4 py-3 text-left text-gray-700 font-semibold">상태</th>
+                          <th className="px-4 py-3 text-left text-gray-700 font-semibold">사유</th>
+                          <th className="px-4 py-3 text-left text-gray-700 font-semibold">교시</th>
+                          <th className="px-4 py-3 text-left text-gray-700 font-semibold">비고</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {attendanceDetailRecords.map((record, index) => (
+                          <tr
+                            key={record.studentId || index}
+                            className="hover:bg-gray-50 transition-colors"
+                          >
+                            <td className="px-4 py-3 text-gray-900 font-medium">
+                              {record.studentNumber || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-gray-900 font-medium">
+                              {record.studentName || '-'}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                record.status === '출석' ? 'bg-green-100 text-green-800' :
+                                record.status === '지각' ? 'bg-yellow-100 text-yellow-800' :
+                                record.status === '조퇴' ? 'bg-orange-100 text-orange-800' :
+                                record.status === '결석' ? 'bg-red-100 text-red-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {record.status || '-'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-gray-700">
+                              {record.reason || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-gray-700">
+                              {record.periods && Array.isArray(record.periods) && record.periods.length > 0
+                                ? record.periods.join(', ') + '교시'
+                                : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-gray-700 text-xs">
+                              {record.memo || '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {/* 수정/삭제 버튼 */}
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                    <button
+                      onClick={handleEditAttendance}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                    >
+                      <Edit className="w-4 h-4" />
+                      <span>수정</span>
+                    </button>
+                    <button
+                      onClick={handleDeleteAttendance}
+                      disabled={deleting}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {deleting ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>삭제 중...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="w-4 h-4" />
+                          <span>삭제</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
