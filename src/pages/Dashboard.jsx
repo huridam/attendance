@@ -10,6 +10,10 @@ import { useStudentContext } from '../context/StudentContext';
 import { format, startOfMonth, endOfMonth, getDaysInMonth, parse, getDay } from 'date-fns';
 import { Download, Loader2, Calendar as CalendarIcon, X, CalendarDays, Edit, Trash2, Save } from 'lucide-react';
 
+const STATUS_OPTIONS = ['출석', '결석', '지각', '조퇴', '결과'];
+const REASON_OPTIONS = ['질병', '인정', '미인정'];
+const PERIODS = [1, 2, 3, 4, 5, 6, 7];
+
 function Dashboard() {
   const [user] = useAuthState(auth);
   const [date, setDate] = useState(new Date());
