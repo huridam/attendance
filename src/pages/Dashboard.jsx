@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { collection, query, where, getDocs, doc, getDoc, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, deleteDoc, setDoc, addDoc } from 'firebase/firestore';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css';
@@ -8,7 +8,7 @@ import { db, auth } from '../firebase';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useStudentContext } from '../context/StudentContext';
 import { format, startOfMonth, endOfMonth, getDaysInMonth, parse, getDay } from 'date-fns';
-import { Download, Loader2, Calendar as CalendarIcon, X, CalendarDays, Edit, Trash2 } from 'lucide-react';
+import { Download, Loader2, Calendar as CalendarIcon, X, CalendarDays, Edit, Trash2, Save } from 'lucide-react';
 
 function Dashboard() {
   const [user] = useAuthState(auth);
@@ -28,6 +28,11 @@ function Dashboard() {
   const [attendanceDetailRecords, setAttendanceDetailRecords] = useState([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showEditStudentModal, setShowEditStudentModal] = useState(false);
+  const [editingStudent, setEditingStudent] = useState(null);
+  const [editingStudentData, setEditingStudentData] = useState(null);
+  const [savingStudentEdit, setSavingStudentEdit] = useState(false);
+  const [deletingStudentRecord, setDeletingStudentRecord] = useState(null);
   const navigate = useNavigate();
   const monthKey = format(activeMonth, 'yyyy-MM');
   const attendanceDateSet = useMemo(() => new Set(attendanceDates), [attendanceDates]);
@@ -605,6 +610,191 @@ function Dashboard() {
     }
   }, [selectedDateForDetail, navigate]);
 
+  // 개별 학생 수정 모달 열기
+  const handleEditStudent = useCallback((studentRecord) => {
+    setEditingStudent(studentRecord);
+    setEditingStudentData({
+      status: studentRecord.status || '출석',
+      reason: studentRecord.reason || '',
+      periods: studentRecord.periods && Array.isArray(studentRecord.periods) ? [...studentRecord.periods] : [],
+      memo: studentRecord.memo || '',
+    });
+    setShowEditStudentModal(true);
+  }, []);
+
+  // 개별 학생 수정 저장
+  const handleSaveStudentEdit = useCallback(async () => {
+    if (!user || !selectedDateForDetail || !selectedClass || !schoolId || !editingStudent) return;
+
+    // 유효성 검사
+    if (editingStudentData.status !== '출석') {
+      if (!editingStudentData.reason) {
+        alert('사유를 선택해주세요.');
+        return;
+      }
+      if (['지각', '조퇴', '결과'].includes(editingStudentData.status) && editingStudentData.periods.length === 0) {
+        alert('교시를 선택해주세요.');
+        return;
+      }
+    }
+
+    setSavingStudentEdit(true);
+    try {
+      const docId = `${schoolId}-${selectedClass}-${selectedDateForDetail}`;
+      const attendanceDocRef = doc(db, 'attendance', docId);
+      const attendanceDoc = await getDoc(attendanceDocRef);
+
+      if (!attendanceDoc.exists()) {
+        alert('출석 기록을 찾을 수 없습니다.');
+        return;
+      }
+
+      const data = attendanceDoc.data();
+      const records = data.records || [];
+
+      // 해당 학생의 기록 찾아서 업데이트
+      const updatedRecords = records.map((record) => {
+        if (record.studentId === editingStudent.studentId) {
+          return {
+            ...record,
+            status: editingStudentData.status,
+            reason: editingStudentData.status !== '출석' ? editingStudentData.reason : '',
+            periods: ['지각', '조퇴', '결과'].includes(editingStudentData.status) ? editingStudentData.periods : [],
+            memo: editingStudentData.memo || '',
+          };
+        }
+        return record;
+      });
+
+      // Firestore 업데이트
+      await setDoc(
+        attendanceDocRef,
+        {
+          ...data,
+          records: updatedRecords,
+        },
+        { merge: false }
+      );
+
+      // 감사 로그 생성
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userDocRef);
+        const userData = userDoc.exists() ? userDoc.data() : {};
+        const editorName = userData.displayName || user.email || user.uid;
+
+        const details = editingStudentData.status !== '출석'
+          ? `${editingStudent.studentName} 학생 기록 수정: ${editingStudentData.status}`
+          : `${editingStudent.studentName} 학생 기록 수정: 출석으로 변경`;
+
+        await addDoc(collection(db, 'audit_logs'), {
+          timestamp: new Date(),
+          editorId: user.uid,
+          editorName: editorName,
+          action: 'ATTENDANCE_UPDATE',
+          targetDocId: docId,
+          schoolId: schoolId,
+          className: selectedClass,
+          date: selectedDateForDetail,
+          details: details,
+        });
+      } catch (logError) {
+        console.error('감사 로그 생성 오류:', logError);
+      }
+
+      // 목록 새로고침
+      await loadAttendanceDetail(selectedDateForDetail);
+      
+      // 모달 닫기
+      setShowEditStudentModal(false);
+      setEditingStudent(null);
+      setEditingStudentData(null);
+    } catch (err) {
+      console.error('학생 기록 수정 오류:', err);
+      alert('학생 기록 수정 중 오류가 발생했습니다.');
+    } finally {
+      setSavingStudentEdit(false);
+    }
+  }, [user, selectedDateForDetail, selectedClass, schoolId, editingStudent, editingStudentData, loadAttendanceDetail]);
+
+  // 개별 학생 기록 삭제 (출석으로 변경)
+  const handleDeleteStudentRecord = useCallback(async (studentRecord) => {
+    if (!user || !selectedDateForDetail || !selectedClass || !schoolId) return;
+
+    if (!window.confirm(`${studentRecord.studentName} 학생의 이상 기록을 삭제하고 출석으로 변경하시겠습니까?`)) {
+      return;
+    }
+
+    setDeletingStudentRecord(studentRecord.studentId);
+    try {
+      const docId = `${schoolId}-${selectedClass}-${selectedDateForDetail}`;
+      const attendanceDocRef = doc(db, 'attendance', docId);
+      const attendanceDoc = await getDoc(attendanceDocRef);
+
+      if (!attendanceDoc.exists()) {
+        alert('출석 기록을 찾을 수 없습니다.');
+        return;
+      }
+
+      const data = attendanceDoc.data();
+      const records = data.records || [];
+
+      // 해당 학생의 기록을 출석으로 변경
+      const updatedRecords = records.map((record) => {
+        if (record.studentId === studentRecord.studentId) {
+          return {
+            ...record,
+            status: '출석',
+            reason: '',
+            periods: [],
+            memo: record.memo || '', // 비고는 유지
+          };
+        }
+        return record;
+      });
+
+      // Firestore 업데이트
+      await setDoc(
+        attendanceDocRef,
+        {
+          ...data,
+          records: updatedRecords,
+        },
+        { merge: false }
+      );
+
+      // 감사 로그 생성
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userDocRef);
+        const userData = userDoc.exists() ? userDoc.data() : {};
+        const editorName = userData.displayName || user.email || user.uid;
+
+        await addDoc(collection(db, 'audit_logs'), {
+          timestamp: new Date(),
+          editorId: user.uid,
+          editorName: editorName,
+          action: 'ATTENDANCE_UPDATE',
+          targetDocId: docId,
+          schoolId: schoolId,
+          className: selectedClass,
+          date: selectedDateForDetail,
+          details: `${studentRecord.studentName} 학생 이상 기록 삭제 (출석으로 변경)`,
+        });
+      } catch (logError) {
+        console.error('감사 로그 생성 오류:', logError);
+      }
+
+      // 목록 새로고침
+      await loadAttendanceDetail(selectedDateForDetail);
+    } catch (err) {
+      console.error('학생 기록 삭제 오류:', err);
+      alert('학생 기록 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setDeletingStudentRecord(null);
+    }
+  }, [user, selectedDateForDetail, selectedClass, schoolId, loadAttendanceDetail]);
+
   // 출석 기록이 있는 날짜인지 확인하는 함수 (강화된 검증)
   const hasAttendanceOnDate = useCallback(
     (dateObj) => {
@@ -866,6 +1056,7 @@ function Dashboard() {
                           <th className="px-4 py-3 text-left text-gray-700 font-semibold">사유</th>
                           <th className="px-4 py-3 text-left text-gray-700 font-semibold">교시</th>
                           <th className="px-4 py-3 text-left text-gray-700 font-semibold">비고</th>
+                          <th className="px-4 py-3 text-left text-gray-700 font-semibold">관리</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200">
@@ -902,41 +1093,202 @@ function Dashboard() {
                             <td className="px-4 py-3 text-gray-700 text-xs">
                               {record.memo || '-'}
                             </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleEditStudent(record)}
+                                  className="p-1.5 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded transition-colors"
+                                  aria-label="수정"
+                                  title="수정"
+                                >
+                                  <Edit className="w-4 h-4" />
+                                </button>
+                                {record.status !== '출석' && (
+                                  <button
+                                    onClick={() => handleDeleteStudentRecord(record)}
+                                    disabled={deletingStudentRecord === record.studentId}
+                                    className="p-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    aria-label="삭제"
+                                    title="삭제"
+                                  >
+                                    {deletingStudentRecord === record.studentId ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Trash2 className="w-4 h-4" />
+                                    )}
+                                  </button>
+                                )}
+                              </div>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                  
-                  {/* 수정/삭제 버튼 */}
-                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 개별 학생 수정 모달 */}
+      {showEditStudentModal && editingStudent && editingStudentData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+            {/* 모달 헤더 */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h3 className="text-lg font-bold text-gray-900">
+                {editingStudent.studentName} 학생 수정
+              </h3>
+              <button
+                onClick={() => {
+                  setShowEditStudentModal(false);
+                  setEditingStudent(null);
+                  setEditingStudentData(null);
+                }}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                aria-label="닫기"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* 모달 내용 */}
+            <div className="p-6 space-y-4">
+              {/* 상태 선택 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">상태</label>
+                <div className="flex flex-wrap gap-2">
+                  {STATUS_OPTIONS.map((status) => (
                     <button
-                      onClick={handleEditAttendance}
-                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                      key={status}
+                      type="button"
+                      onClick={() => {
+                        setEditingStudentData((prev) => ({
+                          ...prev,
+                          status,
+                          reason: status === '출석' ? '' : prev.reason,
+                          periods: ['지각', '조퇴', '결과'].includes(status) ? prev.periods : [],
+                        }));
+                      }}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        editingStudentData.status === status
+                          ? 'bg-gray-900 text-white'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
                     >
-                      <Edit className="w-4 h-4" />
-                      <span>수정</span>
+                      {status}
                     </button>
-                    <button
-                      onClick={handleDeleteAttendance}
-                      disabled={deleting}
-                      className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {deleting ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>삭제 중...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Trash2 className="w-4 h-4" />
-                          <span>삭제</span>
-                        </>
-                      )}
-                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 사유 선택 */}
+              {editingStudentData.status !== '출석' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    사유 <span className="text-red-500">*</span>
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {REASON_OPTIONS.map((reason) => (
+                      <button
+                        key={reason}
+                        type="button"
+                        onClick={() => {
+                          setEditingStudentData((prev) => ({ ...prev, reason }));
+                        }}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                          editingStudentData.reason === reason
+                            ? 'bg-gray-900 text-white'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        {reason}
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
+
+              {/* 교시 선택 */}
+              {['지각', '조퇴', '결과'].includes(editingStudentData.status) && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    교시 <span className="text-red-500">*</span>
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {PERIODS.map((period) => (
+                      <button
+                        key={period}
+                        type="button"
+                        onClick={() => {
+                          const currentPeriods = editingStudentData.periods || [];
+                          const newPeriods = currentPeriods.includes(period)
+                            ? currentPeriods.filter((p) => p !== period)
+                            : [...currentPeriods, period].sort((a, b) => a - b);
+                          setEditingStudentData((prev) => ({ ...prev, periods: newPeriods }));
+                        }}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                          editingStudentData.periods?.includes(period)
+                            ? 'bg-gray-900 text-white'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        {period}교시
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 비고 입력 */}
+              <div>
+                <label htmlFor="edit-memo" className="block text-sm font-medium text-gray-700 mb-2">
+                  비고 (선택사항)
+                </label>
+                <textarea
+                  id="edit-memo"
+                  value={editingStudentData.memo || ''}
+                  onChange={(e) => {
+                    setEditingStudentData((prev) => ({ ...prev, memo: e.target.value }));
+                  }}
+                  placeholder="추가 메모를 입력하세요 (선택사항)"
+                  rows={3}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none resize-none"
+                />
+              </div>
+
+              {/* 저장 버튼 */}
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                <button
+                  onClick={() => {
+                    setShowEditStudentModal(false);
+                    setEditingStudent(null);
+                    setEditingStudentData(null);
+                  }}
+                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={handleSaveStudentEdit}
+                  disabled={savingStudentEdit}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {savingStudentEdit ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>저장 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>저장</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
