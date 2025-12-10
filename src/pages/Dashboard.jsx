@@ -1205,7 +1205,8 @@ function Dashboard() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="overflow-x-auto">
+                  {/* 데스크탑: 테이블 형식 */}
+                  <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="bg-gray-50 border-b border-gray-200">
                         <tr>
@@ -1293,6 +1294,98 @@ function Dashboard() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+
+                  {/* 모바일: 카드 형식 */}
+                  <div className="md:hidden space-y-3">
+                    {attendanceDetailRecords.map((record, index) => (
+                      <div
+                        key={record.studentId || index}
+                        className="bg-white border border-gray-200 rounded-lg shadow-sm p-4"
+                      >
+                        {/* 상단: 번호, 이름, 상태 */}
+                        <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-200">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-600">{record.studentNumber || '-'}번</span>
+                            <span className="text-lg font-semibold text-gray-900">{record.studentName || '-'}</span>
+                          </div>
+                          <span className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                            record.status === '출석' ? 'bg-green-100 text-green-800' :
+                            record.status === '지각' ? 'bg-yellow-100 text-yellow-800' :
+                            record.status === '조퇴' ? 'bg-orange-100 text-orange-800' :
+                            record.status === '결석' ? 'bg-red-100 text-red-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {record.status || '-'}
+                          </span>
+                        </div>
+
+                        {/* 중단: 사유, 교시 */}
+                        {(record.reason || (record.periods && Array.isArray(record.periods) && record.periods.length > 0)) && (
+                          <div className="mb-3 space-y-1.5">
+                            {record.reason && (
+                              <div className="flex items-start gap-2">
+                                <span className="text-xs text-gray-500 whitespace-nowrap">사유:</span>
+                                <span className="text-sm text-gray-700">{record.reason}</span>
+                              </div>
+                            )}
+                            {record.periods && Array.isArray(record.periods) && record.periods.length > 0 && (
+                              <div className="flex items-start gap-2">
+                                <span className="text-xs text-gray-500 whitespace-nowrap">교시:</span>
+                                <span className="text-sm text-gray-700">{record.periods.join(', ') + '교시'}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* 하단: 비고 */}
+                        {record.memo && (
+                          <div className="mb-3 pb-3 border-b border-gray-100">
+                            <div className="flex items-start gap-2">
+                              <span className="text-xs text-gray-500 whitespace-nowrap">비고:</span>
+                              <span className="text-sm text-gray-700 flex-1">{record.memo}</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 관리 버튼 */}
+                        <div className="flex items-center justify-end gap-2 pt-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleEditStudent(record);
+                            }}
+                            className="flex items-center gap-2 px-4 py-2 text-blue-600 bg-blue-50 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors"
+                            aria-label="수정"
+                          >
+                            <Edit className="w-4 h-4" />
+                            <span>수정</span>
+                          </button>
+                          {record.status !== '출석' && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleDeleteStudentRecord(record);
+                              }}
+                              disabled={deletingStudentRecord === record.studentId}
+                              className="flex items-center gap-2 px-4 py-2 text-red-600 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              aria-label="삭제"
+                            >
+                              {deletingStudentRecord === record.studentId ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                              <span>삭제</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1544,7 +1637,7 @@ function Dashboard() {
                     const showPeriods = ['지각', '조퇴', '결과'].includes(record.status);
 
                     return (
-                      <div key={student.id} className="bg-gray-50 rounded-lg p-4 space-y-4 border border-gray-200">
+                      <div key={student.id} className="bg-white rounded-lg p-4 md:p-4 space-y-4 border border-gray-200 shadow-sm">
                         {/* 학생 정보 */}
                         <div className="flex items-center justify-between pb-3 border-b border-gray-200">
                           <div>
@@ -1562,7 +1655,7 @@ function Dashboard() {
                                 key={status}
                                 type="button"
                                 onClick={() => updateBulkRecord(student.id, 'status', status)}
-                                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                className={`px-3 py-2 md:px-4 md:py-2 rounded-lg text-sm font-medium transition-colors ${
                                   record.status === status
                                     ? 'bg-gray-900 text-white'
                                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
@@ -1586,7 +1679,7 @@ function Dashboard() {
                                   key={reason}
                                   type="button"
                                   onClick={() => updateBulkRecord(student.id, 'reason', reason)}
-                                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                  className={`px-3 py-2 md:px-4 md:py-2 rounded-lg text-sm font-medium transition-colors ${
                                     record.reason === reason
                                       ? 'bg-gray-900 text-white'
                                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
@@ -1611,7 +1704,7 @@ function Dashboard() {
                                   key={period}
                                   type="button"
                                   onClick={() => toggleBulkPeriod(student.id, period)}
-                                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                  className={`px-3 py-2 md:px-4 md:py-2 rounded-lg text-sm font-medium transition-colors ${
                                     record.periods?.includes(period)
                                       ? 'bg-gray-900 text-white'
                                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
