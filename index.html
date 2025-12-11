@@ -5,6 +5,85 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>출석부 앱</title>
+    <script>
+      (function() {
+        // 인앱 브라우저 감지
+        function isInAppBrowser() {
+          const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+          const ua = userAgent.toLowerCase();
+          
+          // 인앱 브라우저 User-Agent 패턴
+          const inAppPatterns = [
+            'kakaotalk',      // 카카오톡
+            'naver',          // 네이버
+            'instagram',      // 인스타그램
+            'line',           // 라인
+            'daum',           // 다음
+            'wv',             // WebView (일반적인 인앱 브라우저)
+            'wv)',            // Android WebView
+            'fbav',           // Facebook App
+            'fban',           // Facebook App
+            'fbsv',           // Facebook App
+            'fbios'           // Facebook App
+          ];
+          
+          return inAppPatterns.some(pattern => ua.indexOf(pattern) !== -1);
+        }
+        
+        // iOS 감지
+        function isIOS() {
+          return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        }
+        
+        // Android 감지
+        function isAndroid() {
+          return /android/i.test(navigator.userAgent);
+        }
+        
+        // 인앱 브라우저에서 접속한 경우 처리
+        if (isInAppBrowser()) {
+          const currentUrl = window.location.href;
+          
+          if (isAndroid()) {
+            // 안드로이드: intent:// 스키마로 외부 브라우저 호출
+            try {
+              // URL에서 도메인과 경로 추출
+              const urlObj = new URL(currentUrl);
+              const host = urlObj.host;
+              const path = urlObj.pathname + urlObj.search + urlObj.hash;
+              
+              // 크롬으로 열기 시도
+              const chromeIntent = 'intent://' + host + path + '#Intent;scheme=https;action=android.intent.action.VIEW;package=com.android.chrome;end';
+              
+              // 크롬이 설치되어 있으면 크롬으로 열기
+              window.location.href = chromeIntent;
+              
+              // 크롬이 없으면 삼성 인터넷으로 시도
+              setTimeout(function() {
+                const samsungIntent = 'intent://' + host + path + '#Intent;scheme=https;action=android.intent.action.VIEW;package=com.sec.android.app.sbrowser;end';
+                window.location.href = samsungIntent;
+                
+                // 브라우저 선택 화면 표시 (fallback)
+                setTimeout(function() {
+                  if (confirm('구글 로그인을 사용하려면 외부 브라우저(Chrome, Samsung Internet 등)에서 열어주세요.\n\n브라우저를 선택하시겠습니까?')) {
+                    window.location.href = currentUrl;
+                  }
+                }, 1000);
+              }, 500);
+            } catch (e) {
+              // intent:// 스키마 실패 시 일반 안내
+              alert('구글 로그인을 사용하려면 외부 브라우저(Chrome, Samsung Internet 등)에서 열어주세요.\n\n카카오톡에서:\n1. 우측 상단의 "..." 버튼 클릭\n2. "외부 브라우저에서 열기" 선택');
+            }
+          } else if (isIOS()) {
+            // iOS: 사파리에서 열어달라는 알림
+            alert('보안을 위해 사파리(Safari) 브라우저에서 열어주세요.\n\n사파리에서 열기:\n1. 우측 상단의 "..." 버튼 클릭\n2. "Safari에서 열기" 선택');
+          } else {
+            // 기타 플랫폼: 일반 브라우저 사용 안내
+            alert('구글 로그인을 사용하려면 외부 브라우저(Chrome, Safari, Edge 등)에서 열어주세요.');
+          }
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
